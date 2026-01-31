@@ -18,4 +18,4 @@
 # echo 'src-git passwall https://github.com/xiaorouji/openwrt-passwall' >>feeds.conf.default
 echo 'src-git timecontrol https://github.com/sirpdboy/luci-app-timecontrol' >>feeds.conf.default
 echo 'src-git taskplan https://github.com/sirpdboy/luci-app-taskplan' >>feeds.conf.default
-
+echo 'src-git luci https://github.com/openwrt/luci.git' >>feeds.conf.default
