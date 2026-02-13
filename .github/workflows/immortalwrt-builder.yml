@@ -10,7 +10,7 @@
 # See /LICENSE for more information.
 #
 
-name: ImmortalWrt Builder
+name: ImmortalWrt Builder 360T7
 
 on:
   repository_dispatch:
