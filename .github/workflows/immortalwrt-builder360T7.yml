@@ -1,4 +1,4 @@
-name: ImmortalWrt 24.10 360T7 BBRv3
+name: ImmortalWrt 24.02 360T7 BBRv3
 
 on:
   repository_dispatch:
@@ -6,7 +6,7 @@ on:
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  REPO_BRANCH: openwrt-24.10
+  REPO_BRANCH: openwrt-24.02
   FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: qihoo-360t7-imm.config
   DIY_P1_SH: diy-part1.sh
@@ -15,29 +15,27 @@ env:
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
+  MAX_FILE_SIZE: 2147483647  # GitHub Release单文件上限：2GB-1字节
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     permissions:
-      contents: write
-      packages: write  # 新增：赋予删除Release/包版本的权限，解决exit code 128
+      contents: write  # 仅需contents:write即可操作Releases
 
     steps:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Fix swapfile permission and create swap (解决EACCES权限错误)
+    - name: Fix swapfile permission and create swap
       run: |
-        # 创建并配置swapfile，避免权限拒绝
         if [ ! -f /swapfile ]; then
-          sudo fallocate -l 8G /swapfile  # 8G swap满足OpenWrt编译需求
+          sudo fallocate -l 8G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
         fi
-        sudo chown $USER:$GROUPS /swapfile  # 赋予当前用户访问权限
-        # 验证swap是否生效
+        sudo chown $USER:$GROUPS /swapfile
         swapon --show
 
     - name: Initialization environment
@@ -113,12 +111,18 @@ jobs:
         name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: openwrt/bin
 
-    - name: Organize files
+    - name: Organize files (过滤超大文件)
       id: organize
       if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
         cd openwrt/bin/targets/mediatek/mt7981
         rm -rf packages
+        # 过滤掉超过2GB的文件，避免上传Release失败
+        echo "=== 检查文件大小 ==="
+        find . -type f -size +${{ env.MAX_FILE_SIZE }}c -exec ls -lh {} \;
+        find . -type f -size +${{ env.MAX_FILE_SIZE }}c -exec rm -f {} \;
+        # 可选：对大文件（接近2GB）进行压缩
+        find . -type f -size +1.8G -name "*.img" -exec 7z a -t7z -mx=9 {}.7z {} \; -exec rm -f {} \;
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
@@ -138,6 +142,7 @@ jobs:
         echo "📦 360T7 OpenWrt 24.02 + BBRv3" >> release.txt
         echo "🔧 内核版本：Linux 6.1.x" >> release.txt
         echo "🗓️ 编译时间：$(date +"%Y-%m-%d %H:%M:%S")" >> release.txt
+        echo "⚠️  超大文件（>2GB）已自动过滤，仅保留合规文件" >> release.txt
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Upload firmware to release
@@ -152,12 +157,11 @@ jobs:
         draft: false
         prerelease: false
 
-    - name: Delete old Releases
-      uses: actions/delete-package-versions@v4
+    - name: Delete old Releases (替换原错误的Package删除逻辑)
+      uses: dev-drprasad/delete-older-releases@v0.3.4
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
       with:
-        package-name: 'OpenWrt_firmware'  # 对应固件包名
-        package-type: 'container'  # 新增：必填参数，解决参数组合无效问题
-        min-versions-to-keep: 3  # 替换无效的keep-latest参数
-        delete-only-untagged-versions: false
-        token: ${{ secrets.GITHUB_TOKEN }}  # 显式传入token，规范配置
+        keep_latest: 3  # 保留最新3个Release（此Action支持该参数）
+        delete_tags: true  # 同时删除对应的Tag
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
