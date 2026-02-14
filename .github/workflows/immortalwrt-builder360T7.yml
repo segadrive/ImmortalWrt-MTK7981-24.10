@@ -1,4 +1,4 @@
-name: ImmortalWrt 24.10 360T7 BBRv3
+name: ImmortalWrt 24.10 360T7 BBRv3 (108M Flash)
 
 on:
   repository_dispatch:
@@ -16,6 +16,7 @@ env:
   UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
   MAX_FILE_SIZE: 2147483647  # GitHub Release单文件上限：2GB-1字节
+  FLASH_SIZE_LIMIT: 100      # 360T7 108M闪存适配：根分区最大100M
 
 jobs:
   build:
@@ -45,7 +46,8 @@ jobs:
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
         sudo docker image prune --all --force
         sudo apt update -y
-        sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+        # 新增7z依赖，补充编译必备工具
+        sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd p7zip-full
         sudo apt autoremove --purge -y
         sudo apt clean -y
         sudo timedatectl set-timezone "$TZ"
@@ -62,9 +64,9 @@ jobs:
     - name: Load custom feeds
       run: |
         [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
-        chmod +x $DIY_P1_SH
+        chmod +x $DIY_P1_SH && cp $DIY_P1_SH openwrt/  # 确保脚本复制到openwrt目录
         cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P1_SH
+        ./$DIY_P1_SH  # 修复路径：直接调用当前目录的脚本
 
     - name: Update feeds
       run: cd openwrt && ./scripts/feeds update -a
@@ -76,9 +78,30 @@ jobs:
       run: |
         [ -e files ] && mv files openwrt/files
         [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
-        chmod +x $DIY_P2_SH
+        chmod +x $DIY_P2_SH && cp $DIY_P2_SH openwrt/  # 确保脚本复制到openwrt目录
         cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P2_SH
+        ./$DIY_P2_SH  # 修复路径：直接调用当前目录的脚本
+
+    - name: Pre-check firmware size limit (适配108M闪存)
+      run: |
+        cd openwrt
+        # 检查/设置根分区大小，适配108M闪存
+        if grep -q "CONFIG_TARGET_ROOTFS_PARTSIZE=" .config; then
+          PARTSIZE=$(grep "CONFIG_TARGET_ROOTFS_PARTSIZE=" .config | cut -d'=' -f2)
+          if [ $PARTSIZE -gt ${{ env.FLASH_SIZE_LIMIT }} ]; then
+            echo "❌ 根分区大小设置为${PARTSIZE}M，超出108M闪存限制！自动修正为${{ env.FLASH_SIZE_LIMIT }}M"
+            sed -i "s/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=${{ env.FLASH_SIZE_LIMIT }}/g" .config
+          fi
+        else
+          echo "⚠️  未设置根分区大小，自动设置为${{ env.FLASH_SIZE_LIMIT }}M"
+          echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ env.FLASH_SIZE_LIMIT }}" >> .config
+        fi
+        # 强制开启squashfs压缩，关闭jffs2减小体积
+        echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
+        echo "CONFIG_TARGET_ROOTFS_JFFS2=n" >> .config
+        echo "CONFIG_USE_MKLIBS=y" >> .config  # 剥离库文件冗余符号
+        # 清理冗余依赖缓存
+        make clean
 
     - name: Download package
       id: package
@@ -94,11 +117,16 @@ jobs:
       run: |
         cd openwrt
         echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 V=s
-        echo "status=success" >> $GITHUB_OUTPUT
-        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
-        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
-        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+        # 修复：只有编译成功才设置status=success
+        if make -j$(nproc) || make -j1 V=s; then
+          echo "status=success" >> $GITHUB_OUTPUT
+          grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
+          [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
+          echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+        else
+          echo "status=failed" >> $GITHUB_OUTPUT
+          exit 1  # 编译失败直接终止工作流
+        fi
 
     - name: Check space usage
       if: (!cancelled())
@@ -111,37 +139,69 @@ jobs:
         name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: openwrt/bin
 
-    - name: Organize files (过滤超大文件)
+    - name: Organize files (过滤超大文件+适配108M闪存)
       id: organize
-      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled() && steps.compile.outputs.status == 'success'
       run: |
         cd openwrt/bin/targets/mediatek/mt7981
         rm -rf packages
         # 过滤掉超过2GB的文件，避免上传Release失败
-        echo "=== 检查文件大小 ==="
+        echo "=== 检查文件大小（GitHub Release限制） ==="
         find . -type f -size +${{ env.MAX_FILE_SIZE }}c -exec ls -lh {} \;
         find . -type f -size +${{ env.MAX_FILE_SIZE }}c -exec rm -f {} \;
-        # 可选：对大文件（接近2GB）进行压缩
-        find . -type f -size +1.8G -name "*.img" -exec 7z a -t7z -mx=9 {}.7z {} \; -exec rm -f {} \;
+        # 优化压缩逻辑，避免参数顺序问题
+        find . -type f -size +1.8G -name "*.img" | while read -r file; do
+          7z a -t7z -mx=9 "${file}.7z" "$file" && rm -f "$file"
+        done
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Verify firmware size for 108M flash (关键校验)
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      run: |
+        cd $FIRMWARE
+        # 检查所有img固件大小，确保适配108M闪存
+        for file in *.img *.img.7z; do
+          if [ -f "$file" ]; then
+            # 区分压缩包和原文件，分别校验
+            if [[ $file == *.7z ]]; then
+              UNCOMPRESSED_SIZE=$(7z l "$file" | grep -E "^[0-9]+" | awk '{print $2}' | head -1)
+              UNCOMPRESSED_SIZE_M=$((UNCOMPRESSED_SIZE/1024/1024))
+              if [ $UNCOMPRESSED_SIZE_M -gt ${{ env.FLASH_SIZE_LIMIT }} ]; then
+                echo "❌ 压缩包$file解压后大小为${UNCOMPRESSED_SIZE_M}M，超出108M闪存限制！"
+                exit 1
+              else
+                echo "✅ 压缩包$file解压后大小为${UNCOMPRESSED_SIZE_M}M，符合108M闪存要求"
+              fi
+            else
+              FILE_SIZE=$(du -m "$file" | cut -f1)
+              if [ $FILE_SIZE -gt ${{ env.FLASH_SIZE_LIMIT }} ]; then
+                echo "❌ 固件$file大小为${FILE_SIZE}M，超出108M闪存限制！"
+                exit 1
+              else
+                echo "✅ 固件$file大小为${FILE_SIZE}M，符合108M闪存要求"
+              fi
+            fi
+          fi
+        done
 
     - name: Upload firmware directory
       uses: actions/upload-artifact@v4
       if: steps.organize.outputs.status == 'success' && !cancelled()
       with:
-        name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        name: OpenWrt_firmware${{ env.FLASH_SIZE_LIMIT }}M${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}
 
     - name: Generate release tag
       id: tag
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled() && steps.compile.outputs.status == 'success'
       run: |
-        echo "release_tag=360T7-BBRv3-$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
+        echo "release_tag=360T7-108M-BBRv3-$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
         touch release.txt
-        echo "📦 360T7 OpenWrt 24.02 + BBRv3" >> release.txt
+        echo "📦 360T7 OpenWrt 24.10 + BBRv3 (108M闪存适配版)" >> release.txt
         echo "🔧 内核版本：Linux 6.1.x" >> release.txt
         echo "🗓️ 编译时间：$(date +"%Y-%m-%d %H:%M:%S")" >> release.txt
+        echo "💾 固件限制：根分区${{ env.FLASH_SIZE_LIMIT }}M（适配108M闪存）" >> release.txt
         echo "⚠️  超大文件（>2GB）已自动过滤，仅保留合规文件" >> release.txt
         echo "status=success" >> $GITHUB_OUTPUT
 
@@ -157,11 +217,11 @@ jobs:
         draft: false
         prerelease: false
 
-    - name: Delete old Releases (替换原错误的Package删除逻辑)
+    - name: Delete old Releases
       uses: dev-drprasad/delete-older-releases@v0.3.4
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled() && steps.compile.outputs.status == 'success'
       with:
-        keep_latest: 3  # 保留最新3个Release（此Action支持该参数）
-        delete_tags: true  # 同时删除对应的Tag
+        keep_latest_releases: 3  # 修复：正确的参数名
+        delete_tags: true        # 同时删除对应的Tag
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
