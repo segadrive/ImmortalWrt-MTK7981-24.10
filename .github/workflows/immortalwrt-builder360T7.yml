@@ -1,4 +1,4 @@
-name: ImmortalWrt 24.02 360T7 BBRv3
+name: ImmortalWrt 24.10 360T7 BBRv3
 
 on:
   repository_dispatch:
