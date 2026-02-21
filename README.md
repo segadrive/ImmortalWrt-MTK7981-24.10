@@ -6,7 +6,7 @@
 
 | Name | Description |
 |:-----------:|:------:|
-| **Source** | https://github.com/immortalwrt/immortalwrt|
+| **Source** | https://github.com/padavanonly/immortalwrt-mt798x-6.6
 | **Branch** | openwrt-24.10-6.6 |
 | **Plugins** | cloudflared autoreboot argon-config |
 | **Theme** | argon |
